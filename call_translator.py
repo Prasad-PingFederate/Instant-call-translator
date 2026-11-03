@@ -1,6 +1,7 @@
 """
-Instant Call Translator (English -> Telugu & other Indian languages)
-Floating HUD Overlay for Microsoft Teams, Zoom, Google Meet & Offline In-Person Meetings.
+Instant Call Translator - Enterprise Edition
+Real-Time Speech-to-Telugu Subtitle HUD for Online Client Calls & In-Person Room Meetings.
+Equipped with Adaptive Noise Floor Calibration, Far-Field Room Gain, and IT Terminology Glossary.
 """
 
 import os
@@ -23,10 +24,10 @@ import speech_recognition as sr
 # Suppress soundcard buffer warnings
 warnings.filterwarnings("ignore")
 
-# Configuration Constants
+# Performance & Audio Constants
 DEFAULT_SAMPLE_RATE = 16000
 CHUNK_DURATION_SEC = 0.06  # 60ms chunks for rapid VAD response
-MIN_SPEECH_DURATION_SEC = 0.35  # Ignore transient noise under 350ms
+MIN_SPEECH_DURATION_SEC = 0.35  # Ignore transient clicks under 350ms
 MAX_SPEECH_DURATION_SEC = 7.5  # Max sentence chunk to prevent long translation delays
 
 SUPPORTED_LANGUAGES = {
@@ -46,41 +47,70 @@ MODE_PROFILES = {
     "online": {
         "name": "🎧 Online Call (Teams/Zoom)",
         "use_loopback": True,
-        "sensitivity": 0.015,
-        "silence_sec": 0.55,
+        "sensitivity": 0.012,
+        "silence_sec": 0.50,
         "gain": 1.0,
-        "badge": "#00bcd4",
         "desc": "Captures client voice from speakers/headphones",
     },
     "offline_room": {
         "name": "🎙️ Offline Meeting (Room Mic)",
         "use_loopback": False,
-        "sensitivity": 0.007,  # Higher sensitivity for distant voices
-        "silence_sec": 0.45,  # Snappier finalization for instant translation
-        "gain": 2.2,  # Software gain to amplify speakers across the table
-        "badge": "#ff9800",
+        "sensitivity": 0.006,  # High sensitivity for distant table voices
+        "silence_sec": 0.45,  # Rapid finalization for instant translation
+        "gain": 2.2,  # Far-field boost for speakers across the room
         "desc": "High-gain room mic for in-person conference meetings",
-    },
-    "mic_close": {
-        "name": "🎤 Direct Mic (Headset / Solo)",
-        "use_loopback": False,
-        "sensitivity": 0.015,
-        "silence_sec": 0.50,
-        "gain": 1.0,
-        "badge": "#4caf50",
-        "desc": "Standard mic for direct close-up speech",
     },
 }
 
+# IT & Client Terminology Glossary to preserve natural tech terms in Telugu
+IT_GLOSSARY_PRESERVE = {
+    "PR": "PR (పుల్ రిక్వెస్ట్)",
+    "pull request": "పుల్ రిక్వెస్ట్ (PR)",
+    "sprint": "స్ప్రింట్ (Sprint)",
+    "backlog": "బ్యాక్‌లాగ్ (Backlog)",
+    "blocker": "బ్లాకర్ (Blocker)",
+    "blockers": "బ్లాకర్స్ (Blockers)",
+    "deployment": "డిప్లాయ్‌మెంట్ (Deployment)",
+    "deploy": "డిప్లాయ్ (Deploy)",
+    "staging": "స్టేజింగ్ (Staging)",
+    "production": "ప్రొడక్షన్ (Production)",
+    "timeline": "టైమ్‌లైన్ (Timeline)",
+    "deadline": "డెడ్‌లైన్ (Deadline)",
+    "deliverable": "డెలివరబుల్ (Deliverable)",
+    "deliverables": "డెలివరబుల్స్ (Deliverables)",
+    "pipeline": "పైప్‌లైన్ (Pipeline)",
+    "standup": "స్టాండప్ (Standup)",
+    "sync": "సింక్ (Sync)",
+    "walkthrough": "వాక్‌త్రూ (Walkthrough)",
+}
+
+
+def clean_translated_text(text: str, target_lang: str) -> str:
+    """Polishes machine-translated text with IT domain terminology context."""
+    if not text or target_lang != "te":
+        return text
+
+    # Smooth out overly literal translations of standard tech keywords
+    replacements = {
+        "విస్తరణ": "డిప్లాయ్‌మెంట్ (Deployment)",
+        "పుల్ అభ్యర్థన": "పుల్ రిక్వెస్ట్ (PR)",
+        "లాగడం అభ్యర్థన": "పుల్ రిక్వెస్ట్ (PR)",
+        "అడ్డంకి": "బ్లాకర్ (Blocker)",
+        "అడ్డంకులు": "బ్లాకర్స్ (Blockers)",
+    }
+    for bad, good in replacements.items():
+        text = text.replace(bad, good)
+    return text
+
 
 def translate_text(text: str, target_lang: str = "te") -> str:
-    """Translates text from English to target language with instant fallback."""
+    """Translates text with dual-engine failover (Google High-Speed Engine + MyMemory)."""
     if not text or not text.strip():
         return ""
     if target_lang == "en":
         return text
 
-    # Attempt 1: Fast Google GTX API (~150-300ms)
+    # Engine 1: Google High-Speed Engine (~150-300ms latency)
     try:
         url = "https://translate.googleapis.com/translate_a/single"
         params = {
@@ -95,11 +125,11 @@ def translate_text(text: str, target_lang: str = "te") -> str:
             data = res.json()
             translated = "".join(part[0] for part in data[0] if part[0])
             if translated:
-                return translated
+                return clean_translated_text(translated, target_lang)
     except Exception:
         pass
 
-    # Attempt 2: MyMemory fallback via deep-translator
+    # Engine 2: Fallback Engine via MyMemory
     try:
         from deep_translator import MyMemoryTranslator
 
@@ -107,7 +137,7 @@ def translate_text(text: str, target_lang: str = "te") -> str:
         dest = lang_code_map.get(target_lang, target_lang)
         fallback_res = MyMemoryTranslator(source="en-GB", target=dest).translate(text)
         if fallback_res:
-            return fallback_res
+            return clean_translated_text(fallback_res, target_lang)
     except Exception:
         pass
 
@@ -115,7 +145,7 @@ def translate_text(text: str, target_lang: str = "te") -> str:
 
 
 class AudioCaptureWorker(threading.Thread):
-    """Captures audio, handles far-field gain & VAD, and dispatches speech utterances."""
+    """Adaptive Audio Capture with Dynamic Noise Floor Calibration & Far-Field Boost."""
 
     def __init__(self, audio_queue, status_callback, level_callback):
         super().__init__(daemon=True)
@@ -124,14 +154,14 @@ class AudioCaptureWorker(threading.Thread):
         self.level_callback = level_callback
         self.running = False
 
-        # Current profile settings
         self.current_mode = "online"
         self._apply_profile(MODE_PROFILES[self.current_mode])
         self.mode_changed = False
+        self.noise_floor = 0.005
 
     def _apply_profile(self, profile):
         self.use_loopback = profile["use_loopback"]
-        self.sensitivity = profile["sensitivity"]
+        self.base_sensitivity = profile["sensitivity"]
         self.silence_sec = profile["silence_sec"]
         self.gain = profile["gain"]
 
@@ -157,31 +187,40 @@ class AudioCaptureWorker(threading.Thread):
                     spk = sc.default_speaker()
                     dev_name = spk.name if spk else "Default Speaker"
                     mic_device = sc.get_microphone(id=str(dev_name), include_loopback=True)
-                    self.status_callback(f"Listening: Online Call ({dev_name[:20]}...)")
+                    self.status_callback(f"Listening: Online Call ({dev_name[:18]}...)")
                 else:
                     mic_device = sc.default_microphone()
                     dev_name = mic_device.name if mic_device else "Microphone"
-                    mode_label = "In-Person Room" if self.current_mode == "offline_room" else "Direct Mic"
-                    self.status_callback(f"Listening: {mode_label} ({dev_name[:18]}...)")
+                    self.status_callback(f"Listening: In-Person Room Mic ({dev_name[:16]}...)")
 
                 with mic_device.recorder(samplerate=sample_rate, channels=1) as rec:
                     speech_frames = []
                     silence_counter = 0
                     is_speaking = False
                     pre_buffer = []
+                    recent_energies = []
 
                     while self.running and not self.mode_changed:
                         chunk = rec.record(numframes=chunk_frames)
                         mono = chunk[:, 0] if chunk.ndim > 1 else chunk
 
-                        # Apply software gain boost (crucial for room meetings)
+                        # Far-field room gain boost
                         if self.gain != 1.0:
                             mono = np.clip(mono * self.gain, -1.0, 1.0)
 
                         rms = float(np.sqrt(np.mean(mono**2)))
                         self.level_callback(min(1.0, rms * 35))
 
-                        if rms > self.sensitivity:
+                        # Adaptive Noise Floor Tracking (tracks lowest ambient room energy)
+                        recent_energies.append(rms)
+                        if len(recent_energies) > 30:  # ~1.8 seconds window
+                            recent_energies.pop(0)
+                            self.noise_floor = min(recent_energies) * 0.95
+
+                        # Dynamic Threshold = max(base_sensitivity, noise_floor * 1.8)
+                        effective_threshold = max(self.base_sensitivity, self.noise_floor * 1.8)
+
+                        if rms > effective_threshold:
                             if not is_speaking:
                                 is_speaking = True
                                 speech_frames.extend(pre_buffer)
@@ -202,16 +241,16 @@ class AudioCaptureWorker(threading.Thread):
                                     silence_counter = 0
                             else:
                                 pre_buffer.append(mono)
-                                if len(pre_buffer) > 4:  # retain ~240ms before voice onset
+                                if len(pre_buffer) > 4:  # retain ~240ms pre-voice buffer
                                     pre_buffer.pop(0)
 
-            except Exception as e:
-                self.status_callback("Audio stream resetting in 1.5s...")
-                time.sleep(1.5)
+            except Exception:
+                self.status_callback("Audio reconnecting in 1s...")
+                time.sleep(1.0)
 
 
 class TranslationWorker(threading.Thread):
-    """Processes audio queue -> Fast STT -> Machine Translation -> GUI update."""
+    """Processes speech buffers through Speech-to-Text and contextual Telugu translation."""
 
     def __init__(self, audio_queue, result_callback, status_callback, get_target_lang):
         super().__init__(daemon=True)
@@ -231,9 +270,9 @@ class TranslationWorker(threading.Thread):
                 continue
 
             try:
-                self.status_callback("Transcribing voice...")
+                self.status_callback("⚡ Transcribing client speech...")
                 audio_data = sr.AudioData(pcm_bytes, sample_rate=DEFAULT_SAMPLE_RATE, sample_width=2)
-                # Google Web Speech Recognition
+                # Primary Google Speech Engine
                 english_text = self.recognizer.recognize_google(audio_data, language="en-US")
 
                 if english_text and len(english_text.strip()) > 1:
@@ -248,20 +287,20 @@ class TranslationWorker(threading.Thread):
             except sr.UnknownValueError:
                 self.status_callback("Ready (Listening...)")
             except sr.RequestError:
-                self.status_callback("Network connection issue")
+                self.status_callback("Network connection notice")
                 time.sleep(1)
             except Exception as e:
                 self.status_callback(f"Notice: {str(e)[:30]}")
 
 
 class CallTranslatorHUD(tk.Tk):
-    """Sleek, transparent, always-on-top HUD floating subtitle overlay with multi-mode audio."""
+    """Enterprise HUD overlay with instant mode switching, IT glossary, and transcript log."""
 
     def __init__(self):
         super().__init__()
 
         self.title("Instant Call Translator")
-        self.geometry("860x220+240+35")
+        self.geometry("880x220+240+35")
         self.attributes("-topmost", True)
         self.attributes("-alpha", 0.94)
         self.overrideredirect(True)
@@ -277,7 +316,7 @@ class CallTranslatorHUD(tk.Tk):
 
         self._build_ui()
 
-        # Start Workers
+        # Start Background Workers
         self.capture_worker = AudioCaptureWorker(
             self.audio_queue,
             self.update_status_threadsafe,
@@ -294,13 +333,12 @@ class CallTranslatorHUD(tk.Tk):
         self.translation_worker.start()
 
     def _build_ui(self):
-        # Top draggable header bar
+        # Top Draggable Header Bar
         self.header_bar = tk.Frame(self, bg="#1a1c22", height=34, cursor="fleur")
         self.header_bar.pack(fill=tk.X, side=tk.TOP)
         self.header_bar.bind("<Button-1>", self._start_drag)
         self.header_bar.bind("<B1-Motion>", self._on_drag)
 
-        # App Brand
         title_lbl = tk.Label(
             self.header_bar,
             text="⚡ Instant Translator",
@@ -420,7 +458,7 @@ class CallTranslatorHUD(tk.Tk):
             font=("Segoe UI", 11, "italic"),
             fg="#90a4ae",
             bg="#121316",
-            wraplength=820,
+            wraplength=840,
             justify=tk.LEFT,
             anchor="w",
         )
@@ -433,7 +471,7 @@ class CallTranslatorHUD(tk.Tk):
             font=("Nirmala UI", 16, "bold"),
             fg="#ffe082",
             bg="#121316",
-            wraplength=820,
+            wraplength=840,
             justify=tk.LEFT,
             anchor="w",
         )
@@ -455,9 +493,9 @@ class CallTranslatorHUD(tk.Tk):
         # Active Mode Hint
         self.mode_desc_lbl = tk.Label(
             self.footer_bar,
-            text="Mode: Online Call (Speakers)",
+            text="Mode: 🎧 Online Call (PC Speakers)",
             font=("Segoe UI", 8, "italic"),
-            fg="#90a4ae",
+            fg="#80deea",
             bg="#16181d",
         )
         self.mode_desc_lbl.pack(side=tk.LEFT, padx=8)
@@ -479,7 +517,6 @@ class CallTranslatorHUD(tk.Tk):
     def _select_mode(self, mode_key: str):
         self.current_mode = mode_key
         self.capture_worker.set_mode(mode_key)
-        profile = MODE_PROFILES[mode_key]
 
         if mode_key == "online":
             self.btn_online.config(bg="#006064", fg="#e0f7fa", font=("Segoe UI", 8, "bold"))
@@ -488,7 +525,7 @@ class CallTranslatorHUD(tk.Tk):
         else:
             self.btn_offline.config(bg="#e65100", fg="#fff3e0", font=("Segoe UI", 8, "bold"))
             self.btn_online.config(bg="#263238", fg="#b0bec5", font=("Segoe UI", 8))
-            self.mode_desc_lbl.config(text="Mode: 🎙️ In-Person Meeting (Room Mic + Gain)", fg="#ffcc80")
+            self.mode_desc_lbl.config(text="Mode: 🎙️ In-Person Meeting (Room Mic + 2.2x Gain)", fg="#ffcc80")
 
     def _on_lang_changed(self, event=None):
         name = self.lang_var.get()
