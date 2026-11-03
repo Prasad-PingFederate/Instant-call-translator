@@ -1,7 +1,14 @@
 """
-Instant Call Translator - Enterprise Edition
+Instant Call Translator - Professional Edition
 Real-Time Speech-to-Telugu Subtitle HUD for Online Client Calls & In-Person Room Meetings.
-Equipped with Adaptive Noise Floor Calibration, Far-Field Room Gain, and IT Terminology Glossary.
+Equipped with:
+- Spoken English Accent Selector (US, UK, India, Australia)
+- Dynamic Font Size Scaling (A+ / A-)
+- 0ms Latency LRU Translation Cache
+- One-Click Pause / Resume Toggle
+- Adaptive Noise Floor Calibration & Far-Field Room Gain
+- IT & Business Terminology Preserver
+- Seamless Bluetooth / Headphone Reconnect Resilience
 """
 
 import os
@@ -12,6 +19,7 @@ import queue
 import logging
 import warnings
 import threading
+from functools import lru_cache
 import tkinter as tk
 from tkinter import ttk, messagebox
 import requests
@@ -40,6 +48,13 @@ SUPPORTED_LANGUAGES = {
     "Gujarati (ગુજરાતી)": "gu",
     "Bengali (বাংলা)": "bn",
     "English (Original)": "en",
+}
+
+CLIENT_ACCENTS = {
+    "🇺🇸 US Client (en-US)": "en-US",
+    "🇮🇳 Indian English (en-IN)": "en-IN",
+    "🇬🇧 UK Client (en-GB)": "en-GB",
+    "🇦🇺 Australia (en-AU)": "en-AU",
 }
 
 # Mode Profiles
@@ -82,6 +97,9 @@ IT_GLOSSARY_PRESERVE = {
     "standup": "స్టాండప్ (Standup)",
     "sync": "సింక్ (Sync)",
     "walkthrough": "వాక్‌త్రూ (Walkthrough)",
+    "bug": "బగ్ (Bug)",
+    "bugs": "బగ్స్ (Bugs)",
+    "release": "రిలీజ్ (Release)",
 }
 
 
@@ -90,7 +108,6 @@ def clean_translated_text(text: str, target_lang: str) -> str:
     if not text or target_lang != "te":
         return text
 
-    # Smooth out overly literal translations of standard tech keywords
     replacements = {
         "విస్తరణ": "డిప్లాయ్‌మెంట్ (Deployment)",
         "పుల్ అభ్యర్థన": "పుల్ రిక్వెస్ట్ (PR)",
@@ -103,12 +120,14 @@ def clean_translated_text(text: str, target_lang: str) -> str:
     return text
 
 
+@lru_cache(maxsize=1024)
 def translate_text(text: str, target_lang: str = "te") -> str:
-    """Translates text with dual-engine failover (Google High-Speed Engine + MyMemory)."""
-    if not text or not text.strip():
+    """Translates text with LRU caching and dual-engine failover."""
+    cleaned_input = text.strip() if text else ""
+    if not cleaned_input:
         return ""
     if target_lang == "en":
-        return text
+        return cleaned_input
 
     # Engine 1: Google High-Speed Engine (~150-300ms latency)
     try:
@@ -118,7 +137,7 @@ def translate_text(text: str, target_lang: str = "te") -> str:
             "sl": "en",
             "tl": target_lang,
             "dt": "t",
-            "q": text.strip(),
+            "q": cleaned_input,
         }
         res = requests.get(url, params=params, timeout=3.5)
         if res.status_code == 200:
@@ -135,17 +154,17 @@ def translate_text(text: str, target_lang: str = "te") -> str:
 
         lang_code_map = {"te": "te-IN", "hi": "hi-IN", "ta": "ta-IN", "kn": "kn-IN"}
         dest = lang_code_map.get(target_lang, target_lang)
-        fallback_res = MyMemoryTranslator(source="en-GB", target=dest).translate(text)
+        fallback_res = MyMemoryTranslator(source="en-GB", target=dest).translate(cleaned_input)
         if fallback_res:
             return clean_translated_text(fallback_res, target_lang)
     except Exception:
         pass
 
-    return text
+    return cleaned_input
 
 
 class AudioCaptureWorker(threading.Thread):
-    """Adaptive Audio Capture with Dynamic Noise Floor Calibration & Far-Field Boost."""
+    """Adaptive Audio Capture with Dynamic Noise Floor Calibration & Bluetooth resilience."""
 
     def __init__(self, audio_queue, status_callback, level_callback):
         super().__init__(daemon=True)
@@ -153,6 +172,7 @@ class AudioCaptureWorker(threading.Thread):
         self.status_callback = status_callback
         self.level_callback = level_callback
         self.running = False
+        self.is_paused = False
 
         self.current_mode = "online"
         self._apply_profile(MODE_PROFILES[self.current_mode])
@@ -171,6 +191,10 @@ class AudioCaptureWorker(threading.Thread):
             self._apply_profile(MODE_PROFILES[mode_key])
             self.mode_changed = True
 
+    def toggle_pause(self) -> bool:
+        self.is_paused = not self.is_paused
+        return self.is_paused
+
     def run(self):
         self.running = True
         sample_rate = DEFAULT_SAMPLE_RATE
@@ -183,6 +207,7 @@ class AudioCaptureWorker(threading.Thread):
             silence_chunks_needed = int(self.silence_sec / CHUNK_DURATION_SEC)
 
             try:
+                # Dynamic re-query handles Bluetooth / Headphone plug/unplug events
                 if self.use_loopback:
                     spk = sc.default_speaker()
                     dev_name = spk.name if spk else "Default Speaker"
@@ -201,6 +226,10 @@ class AudioCaptureWorker(threading.Thread):
                     recent_energies = []
 
                     while self.running and not self.mode_changed:
+                        if self.is_paused:
+                            time.sleep(0.1)
+                            continue
+
                         chunk = rec.record(numframes=chunk_frames)
                         mono = chunk[:, 0] if chunk.ndim > 1 else chunk
 
@@ -211,13 +240,12 @@ class AudioCaptureWorker(threading.Thread):
                         rms = float(np.sqrt(np.mean(mono**2)))
                         self.level_callback(min(1.0, rms * 35))
 
-                        # Adaptive Noise Floor Tracking (tracks lowest ambient room energy)
+                        # Adaptive Noise Floor Tracking
                         recent_energies.append(rms)
                         if len(recent_energies) > 30:  # ~1.8 seconds window
                             recent_energies.pop(0)
                             self.noise_floor = min(recent_energies) * 0.95
 
-                        # Dynamic Threshold = max(base_sensitivity, noise_floor * 1.8)
                         effective_threshold = max(self.base_sensitivity, self.noise_floor * 1.8)
 
                         if rms > effective_threshold:
@@ -252,12 +280,13 @@ class AudioCaptureWorker(threading.Thread):
 class TranslationWorker(threading.Thread):
     """Processes speech buffers through Speech-to-Text and contextual Telugu translation."""
 
-    def __init__(self, audio_queue, result_callback, status_callback, get_target_lang):
+    def __init__(self, audio_queue, result_callback, status_callback, get_target_lang, get_accent):
         super().__init__(daemon=True)
         self.audio_queue = audio_queue
         self.result_callback = result_callback
         self.status_callback = status_callback
         self.get_target_lang = get_target_lang
+        self.get_accent = get_accent
         self.recognizer = sr.Recognizer()
         self.recognizer.dynamic_energy_threshold = False
         self.running = True
@@ -272,8 +301,9 @@ class TranslationWorker(threading.Thread):
             try:
                 self.status_callback("⚡ Transcribing client speech...")
                 audio_data = sr.AudioData(pcm_bytes, sample_rate=DEFAULT_SAMPLE_RATE, sample_width=2)
-                # Primary Google Speech Engine
-                english_text = self.recognizer.recognize_google(audio_data, language="en-US")
+                accent = self.get_accent()
+                # Fast Google Speech Recognition with client accent model
+                english_text = self.recognizer.recognize_google(audio_data, language=accent)
 
                 if english_text and len(english_text.strip()) > 1:
                     target_lang = self.get_target_lang()
@@ -294,20 +324,22 @@ class TranslationWorker(threading.Thread):
 
 
 class CallTranslatorHUD(tk.Tk):
-    """Enterprise HUD overlay with instant mode switching, IT glossary, and transcript log."""
+    """Enterprise HUD overlay with instant mode switching, font scaling, accent picker, and pause toggle."""
 
     def __init__(self):
         super().__init__()
 
         self.title("Instant Call Translator")
-        self.geometry("880x220+240+35")
+        self.geometry("920x225+220+35")
         self.attributes("-topmost", True)
         self.attributes("-alpha", 0.94)
         self.overrideredirect(True)
         self.configure(bg="#121316")
 
         self.target_lang_code = "te"  # Default Telugu
+        self.accent_code = "en-US"  # Default US accent
         self.current_mode = "online"
+        self.telugu_font_size = 16  # Scalable font
         self.history = []
         self.drag_x = 0
         self.drag_y = 0
@@ -327,6 +359,7 @@ class CallTranslatorHUD(tk.Tk):
             self.update_subtitles_threadsafe,
             self.update_status_threadsafe,
             lambda: self.target_lang_code,
+            lambda: self.accent_code,
         )
 
         self.capture_worker.start()
@@ -339,6 +372,7 @@ class CallTranslatorHUD(tk.Tk):
         self.header_bar.bind("<Button-1>", self._start_drag)
         self.header_bar.bind("<B1-Motion>", self._on_drag)
 
+        # Brand
         title_lbl = tk.Label(
             self.header_bar,
             text="⚡ Instant Translator",
@@ -346,17 +380,14 @@ class CallTranslatorHUD(tk.Tk):
             fg="#00e5ff",
             bg="#1a1c22",
         )
-        title_lbl.pack(side=tk.LEFT, padx=(10, 6))
+        title_lbl.pack(side=tk.LEFT, padx=(10, 4))
         title_lbl.bind("<Button-1>", self._start_drag)
         title_lbl.bind("<B1-Motion>", self._on_drag)
 
-        # Mode Selector Buttons
-        self.mode_frame = tk.Frame(self.header_bar, bg="#1a1c22")
-        self.mode_frame.pack(side=tk.LEFT, padx=4)
-
+        # Audio Mode Buttons
         self.btn_online = tk.Button(
-            self.mode_frame,
-            text="🎧 Online Call (Teams/Zoom)",
+            self.header_bar,
+            text="🎧 Online Call",
             font=("Segoe UI", 8, "bold"),
             bg="#006064",
             fg="#e0f7fa",
@@ -371,8 +402,8 @@ class CallTranslatorHUD(tk.Tk):
         self.btn_online.pack(side=tk.LEFT, padx=2)
 
         self.btn_offline = tk.Button(
-            self.mode_frame,
-            text="🎙️ Offline Meeting (Room Mic)",
+            self.header_bar,
+            text="🎙️ Room Mic",
             font=("Segoe UI", 8),
             bg="#263238",
             fg="#b0bec5",
@@ -386,6 +417,19 @@ class CallTranslatorHUD(tk.Tk):
         )
         self.btn_offline.pack(side=tk.LEFT, padx=2)
 
+        # Accent Selector Dropdown
+        self.accent_var = tk.StringVar(value="🇺🇸 US Client (en-US)")
+        accent_combo = ttk.Combobox(
+            self.header_bar,
+            textvariable=self.accent_var,
+            values=list(CLIENT_ACCENTS.keys()),
+            state="readonly",
+            width=17,
+            font=("Segoe UI", 8),
+        )
+        accent_combo.pack(side=tk.LEFT, padx=4)
+        accent_combo.bind("<<ComboboxSelected>>", self._on_accent_changed)
+
         # Target Language Dropdown
         self.lang_var = tk.StringVar(value="Telugu (తెలుగు)")
         lang_combo = ttk.Combobox(
@@ -396,8 +440,54 @@ class CallTranslatorHUD(tk.Tk):
             width=15,
             font=("Segoe UI", 8),
         )
-        lang_combo.pack(side=tk.LEFT, padx=6)
+        lang_combo.pack(side=tk.LEFT, padx=4)
         lang_combo.bind("<<ComboboxSelected>>", self._on_lang_changed)
+
+        # Font Resizing Controls
+        self.font_down_btn = tk.Button(
+            self.header_bar,
+            text=" A- ",
+            font=("Segoe UI", 8, "bold"),
+            bg="#263238",
+            fg="#cfd8dc",
+            bd=0,
+            padx=3,
+            pady=2,
+            relief=tk.FLAT,
+            command=self._decrease_font,
+        )
+        self.font_down_btn.pack(side=tk.LEFT, padx=1)
+
+        self.font_up_btn = tk.Button(
+            self.header_bar,
+            text=" A+ ",
+            font=("Segoe UI", 8, "bold"),
+            bg="#263238",
+            fg="#cfd8dc",
+            bd=0,
+            padx=3,
+            pady=2,
+            relief=tk.FLAT,
+            command=self._increase_font,
+        )
+        self.font_up_btn.pack(side=tk.LEFT, padx=1)
+
+        # Pause / Resume Button
+        self.pause_btn = tk.Button(
+            self.header_bar,
+            text="⏸️ Pause",
+            font=("Segoe UI", 8, "bold"),
+            bg="#37474f",
+            fg="#eceff1",
+            activebackground="#455a64",
+            activeforeground="#ffffff",
+            bd=0,
+            padx=6,
+            pady=2,
+            relief=tk.FLAT,
+            command=self._toggle_pause,
+        )
+        self.pause_btn.pack(side=tk.LEFT, padx=4)
 
         # History Button
         hist_btn = tk.Button(
@@ -414,7 +504,7 @@ class CallTranslatorHUD(tk.Tk):
             relief=tk.FLAT,
             command=self._show_history_window,
         )
-        hist_btn.pack(side=tk.LEFT, padx=3)
+        hist_btn.pack(side=tk.LEFT, padx=2)
 
         # Close Button
         close_btn = tk.Button(
@@ -458,7 +548,7 @@ class CallTranslatorHUD(tk.Tk):
             font=("Segoe UI", 11, "italic"),
             fg="#90a4ae",
             bg="#121316",
-            wraplength=840,
+            wraplength=880,
             justify=tk.LEFT,
             anchor="w",
         )
@@ -468,10 +558,10 @@ class CallTranslatorHUD(tk.Tk):
         self.telugu_lbl = tk.Label(
             self.content_frame,
             text="[ఇక్కడ మాట్లాడే మాటలు వెంటనే తెలుగులో అనువదించబడతాయి]",
-            font=("Nirmala UI", 16, "bold"),
+            font=("Nirmala UI", self.telugu_font_size, "bold"),
             fg="#ffe082",
             bg="#121316",
-            wraplength=840,
+            wraplength=880,
             justify=tk.LEFT,
             anchor="w",
         )
@@ -527,10 +617,34 @@ class CallTranslatorHUD(tk.Tk):
             self.btn_online.config(bg="#263238", fg="#b0bec5", font=("Segoe UI", 8))
             self.mode_desc_lbl.config(text="Mode: 🎙️ In-Person Meeting (Room Mic + 2.2x Gain)", fg="#ffcc80")
 
+    def _on_accent_changed(self, event=None):
+        name = self.accent_var.get()
+        self.accent_code = CLIENT_ACCENTS.get(name, "en-US")
+        self.status_lbl.config(text=f"Spoken accent: {self.accent_code}")
+
     def _on_lang_changed(self, event=None):
         name = self.lang_var.get()
         self.target_lang_code = SUPPORTED_LANGUAGES.get(name, "te")
         self.status_lbl.config(text=f"Target language: {name.split()[0]}")
+
+    def _increase_font(self):
+        if self.telugu_font_size < 24:
+            self.telugu_font_size += 2
+            self.telugu_lbl.config(font=("Nirmala UI", self.telugu_font_size, "bold"))
+
+    def _decrease_font(self):
+        if self.telugu_font_size > 12:
+            self.telugu_font_size -= 2
+            self.telugu_lbl.config(font=("Nirmala UI", self.telugu_font_size, "bold"))
+
+    def _toggle_pause(self):
+        is_paused = self.capture_worker.toggle_pause()
+        if is_paused:
+            self.pause_btn.config(text="▶️ Resume", bg="#c62828", fg="#ffffff")
+            self.status_lbl.config(text="⏸️ Translation Paused (Audio muted)")
+        else:
+            self.pause_btn.config(text="⏸️ Pause", bg="#37474f", fg="#eceff1")
+            self.status_lbl.config(text="🟢 Listening resumed...")
 
     def _toggle_compact(self):
         self.compact_mode = not self.compact_mode
@@ -539,7 +653,7 @@ class CallTranslatorHUD(tk.Tk):
             self.english_lbl.pack_forget()
             self.min_btn.config(text=" ▢ ")
         else:
-            self.geometry(f"{self.winfo_width()}x220")
+            self.geometry(f"{self.winfo_width()}x225")
             self.english_lbl.pack(fill=tk.X, pady=(2, 4), before=self.telugu_lbl)
             self.min_btn.config(text=" ─ ")
 
