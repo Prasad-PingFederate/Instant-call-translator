@@ -208,7 +208,7 @@ class CallTranslatorHUD(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        self.title("Bharat Call Translator")
+        self.title("Instant Call Translator")
         self.geometry("820x210+260+40")  # Positioned top-center
         self.attributes("-topmost", True)
         self.attributes("-alpha", 0.93)

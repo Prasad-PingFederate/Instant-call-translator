@@ -1,4 +1,4 @@
-# 🌐 Bharat Call Audio Auto-Translator (English $\rightarrow$ Telugu & Indian Languages)
+# 🌐 Instant Call Translator (English $\rightarrow$ Telugu & Indian Languages)
 
 A lightweight, real-time floating subtitle HUD overlay designed for non-native English speakers during client calls on **Microsoft Teams**, **Zoom**, **Google Meet**, or any web browser call.
 
@@ -8,7 +8,7 @@ A lightweight, real-time floating subtitle HUD overlay designed for non-native E
 
 During client meetings, speech can often be fast, accented, or filled with technical terminology. Default Windows Live Captions lacks support for regional Indian languages like Telugu.
 
-**Bharat Call Translator** captures the incoming client voice directly from your PC speakers/headphones and provides live, high-contrast, translated subtitles in **Telugu (తెలుగు)** (or Hindi, Tamil, Kannada, Marathi, etc.) with minimal latency.
+**Instant Call Translator** captures the incoming client voice directly from your PC speakers/headphones and provides live, high-contrast, translated subtitles in **Telugu (తెలుగు)** (or Hindi, Tamil, Kannada, Marathi, etc.) with minimal latency.
 
 ---
 
@@ -39,8 +39,8 @@ During client meetings, speech can often be fast, accented, or filled with techn
 Clone the repository and install dependencies:
 
 ```bash
-git clone https://github.com/Prasad-PingFederate/bharat-call-translator.git
-cd bharat-call-translator
+git clone https://github.com/Prasad-PingFederate/Instant-call-translator.git
+cd Instant-call-translator
 pip install -r requirements.txt
 ```
 
@@ -87,3 +87,4 @@ python call_translator.py
 ## 📄 License
 
 MIT License. Free to use and customize.
+
